@@ -13,7 +13,7 @@ from mcp.server import MCPServer
 from mcp.types import ImageContent, TextContent
 from PIL import Image as PILImage
 
-from . import ax, flows, inputs, landmarks, mirror, recorder, skills, vision
+from . import ax, explore, flows, inputs, landmarks, mirror, recorder, skills, vision
 from .errors import (
     AccessibilityDenied,
     CoordinatesOutOfRange,
@@ -966,6 +966,24 @@ def delete_skill(name: str) -> str:
         f"Deleted skill {name!r}." if skills.delete(name)
         else f"No skill named {name!r}."
     )
+
+
+@server.tool(
+    description=(
+        "Explore an app and map its screens: which screens exist and which "
+        "control reaches each one. Bounded by max_screens / max_actions / "
+        "max_depth, because every action is a real tap on a real phone. "
+        "Destructive and outward-facing controls (send, pay, delete, log out, "
+        "call...) are never tapped, and are listed as skipped. Expect it to "
+        "take a few minutes -- each action needs a settle and a screen read."
+    )
+)
+@_focus_safe
+def explore_app(
+    app: str, max_screens: int = 8, max_actions: int = 25, max_depth: int = 3
+) -> str:
+    graph = explore.explore(SESSION, app, max_screens, max_actions, max_depth)
+    return graph.render()
 
 
 def main() -> None:

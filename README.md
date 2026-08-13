@@ -374,6 +374,34 @@ still press is a long press, and movement makes it a swipe regardless of
 duration. Consecutive keystrokes collapse into one `type_text`, split on a long
 pause. Skills live in `~/.thumb/skills` (`THUMB_SKILLS_DIR` to move them).
 
+### Exploring an app
+
+```
+explore_app("Settings", max_screens=8, max_actions=25, max_depth=3)
+```
+
+Walks an app breadth-first and returns a map: which screens exist, and which
+control reaches each one. Screens are identified by **the set of text on them**,
+not by pixels, so a clock or a live feed does not make the same screen look new
+on every visit.
+
+**Safety is the design constraint.** An explorer that taps everything on a real
+phone sends messages, spends money and deletes things. Nothing matching the deny
+list is ever tapped — send, pay, order, delete, log out, call, and anything
+carrying a currency symbol or plan wording. A live crawl reached
+`"$ 75.00 a month"` before that last rule existed, which is one tap from a
+subscription. The list errs towards over-skipping: a missed screen is cheap.
+Skipped controls are reported, so you can see what it refused to touch.
+
+Every action is a real tap, so it is bounded by screens, actions and depth, and
+takes minutes rather than seconds — roughly 4–6s per action.
+
+**Known limitation:** it explores whatever the app is showing, and `go_to_root`
+only knows how to use a back chevron. An app resumed on a modal — an upsell
+sheet, a permission prompt — will trap the crawl inside it, which is exactly
+what happened repeatedly against Settings' iCloud upsell. Dismiss modals before
+exploring, and prefer apps opened fresh.
+
 ### Adding a shortcut
 
 The shortcut system is split so that adding one rarely means writing flow logic:

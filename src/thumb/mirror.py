@@ -272,6 +272,29 @@ def _capture_screencapture_cli(window_id: int) -> PILImage.Image | None:
             pass
 
 
+# Every iPhone is within a whisker of this ratio in portrait (0.4599 to 0.4622).
+# Anything appreciably taller than the widest of them means we have captured
+# something that is not just the phone screen.
+PHONE_ASPECT = 0.4613
+# Real detections land within about 0.001 of a device's true ratio, so this
+# floor sits just under the narrowest phone. The mirroring toolbar only moves
+# the ratio from 0.4611 to 0.4536 -- a small shift, but it is the whole content
+# rect that is wrong, so the check has to be tight.
+MIN_PLAUSIBLE_ASPECT = 0.455
+
+
+def _looks_like_chrome(left: int, top: int, right: int, bottom: int) -> bool:
+    """Whether a detected region is too tall to be just the phone screen.
+
+    iPhone Mirroring reveals a toolbar when the cursor is over its window, and
+    that toolbar is opaque -- so the "opaque region" becomes the whole window
+    and every mapped coordinate silently shifts and rescales. The aspect ratio
+    is the giveaway: chrome only ever adds height.
+    """
+    height = bottom - top
+    return height > 0 and (right - left) / height < MIN_PLAUSIBLE_ASPECT
+
+
 def _content_bbox(rgba: PILImage.Image, scale: float) -> tuple[int, int, int, int]:
     """Device-screen bbox in capture pixels, from the opaque region."""
     width, height = rgba.size
@@ -281,7 +304,12 @@ def _content_bbox(rgba: PILImage.Image, scale: float) -> tuple[int, int, int, in
         left, top, right, bottom = box
         # Sanity-check: the screen must dominate the window and stay portrait-ish.
         if (right - left) >= width * 0.5 and (bottom - top) >= height * 0.5:
-            return left, top, right, bottom
+            if not _looks_like_chrome(left, top, right, bottom):
+                return left, top, right, bottom
+            # The toolbar is drawn *over* the window without resizing it, so the
+            # phone screen is still exactly where the fixed insets say it is.
+            # Falling back is more accurate than trimming, which would leave the
+            # side margins in.
     inset_l, inset_t, inset_r, inset_b = FALLBACK_INSETS
     return (
         round(inset_l * scale),

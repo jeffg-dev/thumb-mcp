@@ -99,3 +99,30 @@ def test_frame_difference_is_zero_for_identical_and_large_for_inverted():
     white = Image.new("RGB", (100, 100), (255, 255, 255))
     assert mirror.frame_difference(black, black) == 0
     assert mirror.frame_difference(black, white) > 200
+
+
+def test_toolbar_chrome_is_recognised_as_too_tall():
+    """iPhone Mirroring shows a toolbar on hover; it is opaque.
+
+    Alpha detection then returns the whole window and every mapped coordinate
+    silently shifts and rescales. Measured live: the full 636x1402 window,
+    aspect 0.4536 instead of 0.4611.
+    """
+    assert mirror._looks_like_chrome(0, 0, 636, 1402)
+
+
+def test_a_real_phone_shaped_detection_is_not_chrome():
+    assert not mirror._looks_like_chrome(15, 76, 621, 1386)
+
+
+def test_degenerate_boxes_are_not_treated_as_chrome():
+    assert not mirror._looks_like_chrome(0, 0, 100, 0)
+
+
+def test_chrome_detection_falls_back_to_the_fixed_insets():
+    """The toolbar overlays the window without resizing it, so the phone screen
+    is still exactly where the measured insets say."""
+    image = Image.new("RGBA", (636, 1402), (20, 20, 20, 255))   # fully opaque
+    left, top, right, bottom = mirror._content_bbox(image, scale=2.0)
+    assert (left, top) == (16, 76)
+    assert (right - left) / (bottom - top) == pytest.approx(0.4611, abs=0.005)
