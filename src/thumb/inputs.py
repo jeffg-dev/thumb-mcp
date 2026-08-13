@@ -65,6 +65,11 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+# Stamped onto every event this module posts. The recorder ignores anything
+# carrying it, so replaying a skill cannot record itself.
+SYNTHETIC_MARKER = 0x7468756D  # "thum"
+
+
 def _use_pid_target() -> bool:
     return os.environ.get("IPHONE_MIRROR_EVENT_TARGET", "hid").lower() == "pid"
 
@@ -72,6 +77,9 @@ def _use_pid_target() -> bool:
 def _post(pid: int, event) -> None:
     if event is None:
         raise MirrorError("Quartz failed to create an input event.")
+    Quartz.CGEventSetIntegerValueField(
+        event, Quartz.kCGEventSourceUserData, SYNTHETIC_MARKER
+    )
     if _use_pid_target():
         Quartz.CGEventPostToPid(pid, event)
     else:
@@ -248,6 +256,9 @@ def scroll_wheel(
         )
         if event is None:
             raise MirrorError("Quartz failed to create a scroll event.")
+        Quartz.CGEventSetIntegerValueField(
+            event, Quartz.kCGEventSourceUserData, SYNTHETIC_MARKER
+        )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
         time.sleep(step_delay)
 

@@ -341,6 +341,39 @@ What they pin, and why each one exists:
 Anything needing a real device stays out of the suite deliberately: it would
 make CI impossible and the failures would be about the phone, not the code.
 
+### Skills: record once, replay after
+
+Hand-writing a flow means measuring landmarks for every control it touches.
+Recording lets you demonstrate it instead:
+
+```
+start_recording()
+   ...drive the phone by hand...
+stop_recording("open-wifi", app="Settings")
+
+run_skill("open-wifi")
+```
+
+A skill is a list of **device-point** steps plus the app to open first — no
+pixels, no absolute screen coordinates — so one recorded on a small window
+replays on a zoomed one.
+
+Three things make it trustworthy rather than merely plausible:
+
+* **The tap is listen-only.** Recording never alters what you are doing.
+* **Our own events are ignored.** Everything this server posts carries a marker
+  the recorder skips, so replaying a skill while recording cannot record itself
+  and double its own length.
+* **Replay starts at the app root**, then reports any step that changed nothing.
+  Without the reset, a skill can appear to work purely because iOS reopened the
+  app on the screen the recording ended on — which is exactly what the first
+  replay of `open-wifi` did.
+
+Gestures are classified from raw events: a short still press is a tap, a long
+still press is a long press, and movement makes it a swipe regardless of
+duration. Consecutive keystrokes collapse into one `type_text`, split on a long
+pause. Skills live in `~/.thumb/skills` (`THUMB_SKILLS_DIR` to move them).
+
 ### Adding a shortcut
 
 The shortcut system is split so that adding one rarely means writing flow logic:

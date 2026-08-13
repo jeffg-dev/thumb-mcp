@@ -13,7 +13,7 @@ from mcp.server import MCPServer
 from mcp.types import ImageContent, TextContent
 from PIL import Image as PILImage
 
-from . import ax, flows, inputs, landmarks, mirror, vision
+from . import ax, flows, inputs, landmarks, mirror, recorder, skills, vision
 from .errors import (
     AccessibilityDenied,
     CoordinatesOutOfRange,
@@ -127,6 +127,9 @@ class Session:
 
 
 SESSION = Session()
+
+# One recorder for the process: recording is inherently a single global mode.
+RECORDER = recorder.Recorder()
 
 
 @dataclass
@@ -881,6 +884,88 @@ def go_to_root(max_steps: int = 5) -> list[TextContent | ImageContent]:
         else "Already at the app root -- nothing to back out of."
     )
     return _shot(frame.image, note, frame)
+
+
+@server.tool(
+    description=(
+        "Start recording what you do on the phone. Drive it by hand -- taps, "
+        "swipes, typing, scrolling -- then call stop_recording(name) to save it "
+        "as a replayable skill. Recording only watches; it never alters your "
+        "input, and it ignores anything this server itself sends."
+    )
+)
+def start_recording() -> str:
+    ax.ensure_accessibility()
+    RECORDER.start()
+    return (
+        "Recording. Drive the phone by hand, then call stop_recording('a-name'). "
+        "Only actions on the mirrored screen are captured."
+    )
+
+
+@server.tool(
+    description=(
+        "Stop recording and save what was captured as a named skill. Set app to "
+        "the app it should open first (e.g. 'Instagram'), so replaying it does "
+        "not depend on that app already being frontmost."
+    )
+)
+def stop_recording(name: str, app: str | None = None, description: str = "") -> str:
+    steps = RECORDER.stop()
+    if not steps:
+        return (
+            "Recorded nothing -- no input landed on the mirrored screen. The "
+            "skill was not saved."
+        )
+    frame = SESSION.live_frame()
+    skill = skills.Skill(
+        name=skills.normalise(name),
+        steps=steps,
+        app=app,
+        description=description,
+        device=f"{frame.device_w}x{frame.device_h}",
+        created=time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    path = skills.save(skill)
+    return f"Saved to {path}.\n{skill.summary()}"
+
+
+@server.tool(description="List saved skills and what each one does.")
+def list_skills() -> str:
+    saved = skills.load_all()
+    if not saved:
+        return (
+            f"No skills saved yet (looking in {skills.skills_dir()}). Use "
+            "start_recording() to make one."
+        )
+    return "\n\n".join(skill.summary() for skill in saved)
+
+
+@server.tool(description="Show a saved skill's steps without running it.")
+def get_skill(name: str) -> str:
+    return skills.load(name).summary()
+
+
+@server.tool(
+    description=(
+        "Replay a saved skill. Opens its app first if it has one, runs each "
+        "step, and reports any step that changed nothing on screen -- which is "
+        "how a skill that has drifted out of date shows up."
+    )
+)
+@_focus_safe
+def run_skill(name: str) -> list[TextContent | ImageContent]:
+    skill = skills.load(name)
+    report, image = skills.replay(SESSION, skill)
+    return _shot(image, report)
+
+
+@server.tool(description="Delete a saved skill.")
+def delete_skill(name: str) -> str:
+    return (
+        f"Deleted skill {name!r}." if skills.delete(name)
+        else f"No skill named {name!r}."
+    )
 
 
 def main() -> None:
