@@ -1,0 +1,29 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    environment: pypi
+    permissions:
+      # PyPI trusted publishing -- no API token to store or rotate.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Test before publishing
+        run: |
+          uv sync --dev
+          uv run pytest tests -q
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always

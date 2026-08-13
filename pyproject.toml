@@ -3,11 +3,23 @@ name = "thumb-mcp"
 version = "0.1.0"
 description = "Control your iPhone from Claude through the macOS iPhone Mirroring app"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "ishan-crd", email = "ishangupta3121@gmail.com" }
 ]
-keywords = ["mcp", "iphone", "ios", "macos", "automation", "claude"]
+keywords = ["mcp", "iphone", "ios", "macos", "automation", "claude", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: MacOS X",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Utilities",
+]
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=2.0.0",
@@ -15,11 +27,13 @@ dependencies = [
     "pyobjc-framework-applicationservices>=10.0",
     "pyobjc-framework-cocoa>=10.0",
     "pyobjc-framework-quartz>=10.0",
+    "pyobjc-framework-vision>=10.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/ishan-crd/thumb-mcp"
 Repository = "https://github.com/ishan-crd/thumb-mcp"
+Issues = "https://github.com/ishan-crd/thumb-mcp/issues"
 
 [project.scripts]
 thumb-mcp = "thumb.server:main"
@@ -32,3 +46,13 @@ build-backend = "uv_build"
 # backend needs telling -- it would otherwise look for a "thumb_mcp" module.
 [tool.uv.build-backend]
 module-name = "thumb"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+# tests/ on the path so conftest helpers import cleanly
+pythonpath = ["tests"]
+testpaths = ["tests"]

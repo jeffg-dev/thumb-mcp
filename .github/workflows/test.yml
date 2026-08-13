@@ -1,0 +1,46 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    # macOS: the whole package imports Quartz, ApplicationServices and Vision.
+    # The suite itself needs no phone, no mirroring session and no permissions.
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev --python ${{ matrix.python-version }}
+
+      - name: Run tests
+        run: uv run pytest tests -q
+
+      - name: Check the server starts and registers its tools
+        run: |
+          uv run python - <<'PY'
+          import asyncio
+          from thumb.server import server
+
+          async def main():
+              tools = await server.list_tools()
+              names = {t.name for t in tools}
+              assert "screenshot" in names, names
+              assert "tap_text" in names, names
+              # Removed because they cannot work through mirroring.
+              assert "control_center" not in names
+              print(f"ok: {len(tools)} tools registered")
+
+          asyncio.run(main())
+          PY

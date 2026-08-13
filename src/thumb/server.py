@@ -13,11 +13,12 @@ from mcp.server import MCPServer
 from mcp.types import ImageContent, TextContent
 from PIL import Image as PILImage
 
-from . import ax, flows, inputs, landmarks, mirror
+from . import ax, flows, inputs, landmarks, mirror, vision
 from .errors import (
     AccessibilityDenied,
     CoordinatesOutOfRange,
     MirrorError,
+    MirroringNotRunning,
     MirroringPaused,
     ScreenRecordingDenied,
     WindowNotFound,
@@ -84,6 +85,13 @@ class Session:
         """
         try:
             return mirror.find_window()
+        except MirroringNotRunning:
+            # The app exits by itself once a session ends. Relaunching is always
+            # the right move -- there is nothing for a human to decide here.
+            if not mirror.launch_app():
+                raise
+            time.sleep(2.0)
+            return mirror.find_window()
         except WindowNotFound:
             pid = mirror.mirroring_pid()
             if pid is None:
@@ -119,6 +127,20 @@ class Session:
 
 
 SESSION = Session()
+
+
+@dataclass
+class PendingDraft:
+    """A composed-but-unsent message waiting on the user's go-ahead."""
+
+    app: str  # "messages" | "whatsapp"
+    recipient: str
+    text: str
+    contact_index: int = 1
+
+
+# Set when a send_* tool drafts, cleared once the message actually goes.
+PENDING: PendingDraft | None = None
 
 
 def _focus_safe(fn):
@@ -430,11 +452,30 @@ def search_in_app(
 
 @server.tool(
     description=(
+        "Open the running Expo dev-server project on the phone, in one call: "
+        "Safari -> the dev-server URL -> 'Expo Go' -> confirm the handoff -> "
+        "wait for the JS bundle to build. Leave url unset to use this Mac's LAN "
+        "address automatically (the phone cannot reach localhost -- that is the "
+        "phone itself). Set use_dev_build=true to pick 'Development Build' "
+        "instead of 'Expo Go'."
+    )
+)
+@_focus_safe
+def open_expo_app(
+    url: str | None = None, use_dev_build: bool = False
+) -> list[TextContent | ImageContent]:
+    report, image = flows.open_expo_app(SESSION, url, use_dev_build)
+    return _shot(image, report)
+
+
+@server.tool(
+    description=(
         "Send a WhatsApp message. Opens WhatsApp, starts a new chat, searches "
         "the recipient, opens that chat and types the body. By default it STOPS "
-        "THERE and returns a screenshot to confirm -- call again with send=true "
-        "to actually send. WhatsApp does not rank exact name matches first, so "
-        "if the chat header shows the wrong person, retry with contact_index=2, "
+        "THERE and returns a screenshot. Show it to the user, ask whether to "
+        "send, and on yes call confirm_send() rather than re-running this tool "
+        "with send=true. WhatsApp does not rank exact name matches first, so if "
+        "the chat header shows the wrong person, retry with contact_index=2, "
         "3, ... to pick a different search result."
     )
 )
@@ -442,7 +483,13 @@ def search_in_app(
 def send_whatsapp(
     recipient: str, text: str, contact_index: int = 1, send: bool = False
 ) -> list[TextContent | ImageContent]:
+    global PENDING
     report, image = flows.send_whatsapp(SESSION, recipient, text, contact_index, send)
+    PENDING = (
+        PendingDraft("whatsapp", recipient, text, contact_index)
+        if (not send and "Drafted" in report)
+        else None
+    )
     return _shot(image, report)
 
 
@@ -450,17 +497,24 @@ def send_whatsapp(
     description=(
         "Send a text message through the built-in Messages app (iMessage/SMS). "
         "For WhatsApp use send_whatsapp instead. Opens Messages, starts a new message, resolves "
-        "the recipient to a real contact, and types the body. By default it "
-        "STOPS THERE and returns a screenshot so you can confirm who it "
-        "resolved to and what it says -- call again with send=true to actually "
-        "send. Fails loudly if no contact matches the name."
+        "the recipient to a real contact, and types the body. It STOPS THERE "
+        "and returns a screenshot. Show it to the user, ask whether to send, "
+        "and on yes call confirm_send() -- do NOT call this tool again with "
+        "send=true, which needlessly rebuilds the whole draft. Fails loudly if "
+        "no contact matches the name."
     )
 )
 @_focus_safe
 def send_message(
     recipient: str, text: str, send: bool = False
 ) -> list[TextContent | ImageContent]:
+    global PENDING
     report, image = flows.send_message(SESSION, recipient, text, send)
+    PENDING = (
+        PendingDraft("messages", recipient, text)
+        if (not send and "Drafted" in report)
+        else None
+    )
     return _shot(image, report)
 
 
@@ -494,35 +548,35 @@ def tap_and_type(
 )
 @_focus_safe
 def scroll(direction: str = "down", amount: float = 0.6) -> list[TextContent | ImageContent]:
+    before = SESSION.frame().image
     flows.scroll(SESSION, direction, amount)
     status, image = flows.settle(SESSION, timeout_s=4.0)
+    # Say whether it actually moved. Hitting the end of a list is legitimate, so
+    # this is not an error -- but reporting "scrolled" when nothing moved is how
+    # a caller ends up scrolling forever looking for something.
+    moved = mirror.frame_difference(before, image)
+    if moved <= flows.CHANGED:
+        return _shot(
+            image,
+            f"Scroll {direction} did not move the screen (delta {moved:.2f}) -- "
+            "already at the end of the content, or this view does not scroll.",
+        )
     return _shot(image, f"Scrolled {direction} by {amount:g} ({status}).")
 
 
 @server.tool(
-    description="Go back (swipe in from the left edge). Returns the settled screen."
+    description=(
+        "Go back one screen by tapping the app's top-left back chevron. Fails "
+        "loudly if nothing changes, which usually means you are already at a "
+        "root screen. (The iOS edge-swipe gesture does not work through "
+        "mirroring.)"
+    )
 )
 @_focus_safe
 def go_back() -> list[TextContent | ImageContent]:
     flows.back(SESSION)
     status, image = flows.settle(SESSION, timeout_s=4.0)
-    return _shot(image, f"Swiped back ({status}).")
-
-
-@server.tool(description="Open Control Centre. Returns the settled screen.")
-@_focus_safe
-def control_center() -> list[TextContent | ImageContent]:
-    flows.control_center(SESSION)
-    status, image = flows.settle(SESSION, timeout_s=4.0)
-    return _shot(image, f"Opened Control Centre ({status}).")
-
-
-@server.tool(description="Open Notification Centre. Returns the settled screen.")
-@_focus_safe
-def notifications() -> list[TextContent | ImageContent]:
-    flows.notifications(SESSION)
-    status, image = flows.settle(SESSION, timeout_s=4.0)
-    return _shot(image, f"Opened Notification Centre ({status}).")
+    return _shot(image, f"Went back ({status}).")
 
 
 @server.tool(
@@ -550,6 +604,283 @@ def survey_home(max_pages: int = 4) -> list[TextContent | ImageContent]:
         out.append(TextContent(type="text", text=label))
         out.append(_png_content(mirror.downscale(image)))
     return out
+
+
+@server.tool(
+    description=(
+        "Send the message that is already drafted on screen, after the user has "
+        "confirmed it. This is the fast path: it presses Send directly on the "
+        "existing draft instead of rebuilding it, and only screenshots "
+        "afterwards to prove the message went and went to the right person. If "
+        "the tap does not register it rebuilds the draft and sends it in the "
+        "same call, without asking again. Use this instead of calling a send_* "
+        "tool a second time with send=true."
+    )
+)
+@_focus_safe
+def confirm_send() -> list[TextContent | ImageContent]:
+    global PENDING
+    if PENDING is None:
+        raise MirrorError(
+            "Nothing is drafted. Call send_message() or send_whatsapp() first, "
+            "show the user the draft, and confirm_send() once they agree."
+        )
+    draft = PENDING
+
+    # Straight to the send button -- the draft was already screenshotted and
+    # approved, so a second pre-send capture would only add latency.
+    sent, status, image = flows.tap_send(SESSION, draft.app)
+    if sent:
+        PENDING = None
+        return _shot(
+            image,
+            f"Sent {draft.text!r} to {draft.recipient!r} on {draft.app} "
+            f"({status}). Verified: the composer is empty.",
+        )
+
+    # The draft was still sitting in the composer, so the tap missed or the
+    # screen had moved on. Rebuild and send in one go rather than bouncing back
+    # to the user, who has already said yes.
+    if draft.app == "whatsapp":
+        report, image = flows.send_whatsapp(
+            SESSION, draft.recipient, draft.text, draft.contact_index, send=True
+        )
+    else:
+        report, image = flows.send_message(
+            SESSION, draft.recipient, draft.text, send=True
+        )
+    PENDING = None
+    return _shot(image, "Send did not register, so the draft was rebuilt. " + report)
+
+
+@server.tool(
+    description=(
+        "List every piece of text on the iPhone screen with the exact device "
+        "coordinates to tap it. Use this instead of guessing positions from a "
+        "screenshot -- then tap(x, y), or just call tap_text(). Returns text "
+        "only by default, which is far cheaper than an image; set "
+        "include_image=true if you also need to see the screen."
+    )
+)
+@_focus_safe
+def describe_screen(include_image: bool = False) -> list[TextContent | ImageContent]:
+    frame = SESSION.live_frame()
+    elements = vision.recognize(frame.image, frame.device_w, frame.device_h)
+    lines = [
+        f"{len(elements)} text elements on screen. Coordinates are device "
+        f"points in a {frame.device_w} x {frame.device_h} space -- pass them "
+        "straight to tap(x, y).",
+    ]
+    lines += [
+        f"  ({element.x:6.0f}, {element.y:6.0f})  {element.text}"
+        for element in elements
+    ]
+    out: list[TextContent | ImageContent] = [
+        TextContent(type="text", text="\n".join(lines))
+    ]
+    if include_image:
+        out.append(_png_content(mirror.downscale(frame.image)))
+    return out
+
+
+@server.tool(
+    description=(
+        "Tap on-screen text by name, e.g. tap_text('Wallet'). Finds the text "
+        "with OCR and taps its centre, so it needs no coordinates and survives "
+        "layout changes. Prefers an exact label match over a longer string that "
+        "merely contains it. Use occurrence=2, 3, ... when the same text "
+        "appears more than once."
+    )
+)
+@_focus_safe
+def tap_text(text: str, occurrence: int = 1) -> str:
+    frame = SESSION.live_frame()
+    elements = vision.recognize(frame.image, frame.device_w, frame.device_h)
+    matches = vision.find(elements, text)
+    if not matches:
+        sample = ", ".join(repr(e.text) for e in elements[:12])
+        raise MirrorError(
+            f"No on-screen text matching {text!r}. Visible text includes: "
+            f"{sample}. Call describe_screen() to see everything."
+        )
+    index = max(1, occurrence) - 1
+    if index >= len(matches):
+        raise MirrorError(
+            f"Only {len(matches)} match(es) for {text!r}, so occurrence="
+            f"{occurrence} does not exist."
+        )
+    target = matches[index]
+    gx, gy = inputs.tap(frame, target.x, target.y)
+    others = f" ({len(matches)} matches; used #{index + 1})" if len(matches) > 1 else ""
+    return (
+        f"Tapped {target.text!r} at device ({target.x:.0f}, {target.y:.0f})"
+        f" -> screen ({gx:.0f}, {gy:.0f}){others}."
+    )
+
+
+@server.tool(
+    description=(
+        "Press and hold at a device point. Use for context menus, previews, "
+        "and picking up an icon to move it. Distinct from tap: hold_ms must "
+        "clear iOS's ~500ms long-press threshold."
+    )
+)
+@_focus_safe
+def long_press(x: float, y: float, hold_ms: int = 700) -> str:
+    frame = SESSION.live_frame()
+    _check(frame, x, y)
+    gx, gy = inputs.long_press(frame, x, y, hold_ms)
+    return (
+        f"Held ({x:g}, {y:g}) for {hold_ms}ms -> screen ({gx:.0f}, {gy:.0f}). "
+        "Call wait_until_settled() then screenshot() to see the result."
+    )
+
+
+@server.tool(
+    description="Double-tap at a device point, e.g. to zoom or to like."
+)
+@_focus_safe
+def double_tap(x: float, y: float) -> str:
+    frame = SESSION.live_frame()
+    _check(frame, x, y)
+    gx, gy = inputs.double_tap(frame, x, y)
+    return f"Double-tapped ({x:g}, {y:g}) -> screen ({gx:.0f}, {gy:.0f})."
+
+
+@server.tool(
+    description=(
+        "Drag an item from one device point to another: press and hold until "
+        "it lifts, move, dwell at the destination, release. Use for reordering "
+        "and drag-and-drop. For scrolling or flicking use swipe instead -- a "
+        "swipe deliberately stays under the long-press threshold, a drag "
+        "deliberately exceeds it."
+    )
+)
+@_focus_safe
+def drag(
+    x1: float, y1: float, x2: float, y2: float, hold_ms: int = 700, move_ms: int = 900
+) -> str:
+    frame = SESSION.live_frame()
+    _check(frame, x1, y1)
+    _check(frame, x2, y2)
+    start, end = inputs.drag(frame, x1, y1, x2, y2, hold_ms, move_ms)
+    return (
+        f"Dragged ({x1:g}, {y1:g}) -> ({x2:g}, {y2:g}) "
+        f"[screen {start[0]:.0f},{start[1]:.0f} -> {end[0]:.0f},{end[1]:.0f}]. "
+        "Call wait_until_settled() then screenshot() to see the result."
+    )
+
+
+@server.tool(
+    description=(
+        "Scroll until some text comes into view, then optionally tap it. OCR "
+        "only sees what is rendered, so anything below the fold is invisible to "
+        "describe_screen and tap_text -- use this to reach it. Stops early when "
+        "the list stops moving."
+    )
+)
+@_focus_safe
+def scroll_to(
+    text: str, direction: str = "down", tap: bool = False, max_scrolls: int = 10
+) -> str:
+    element, scrolls, frame = flows.scroll_to_text(SESSION, text, direction, max_scrolls)
+    if element is None:
+        raise MirrorError(
+            f"Scrolled {direction} {scrolls} time(s) without finding {text!r}. "
+            "It may be spelled differently, be an icon rather than text, or lie "
+            "in the other direction."
+        )
+    where = f"at device ({element.x:.0f}, {element.y:.0f}) after {scrolls} scroll(s)"
+    if not tap:
+        return f"Found {element.text!r} {where}. Pass tap=true to tap it."
+    gx, gy = inputs.tap(frame, element.x, element.y)
+    return f"Found and tapped {element.text!r} {where} -> screen ({gx:.0f}, {gy:.0f})."
+
+
+@server.tool(
+    description=(
+        "Open a URL on the phone through Safari. Works with web pages and with "
+        "deep links such as exp:// or maps://, which hand off to another app "
+        "after iOS asks for confirmation. Verifies the URL actually committed "
+        "rather than assuming Return worked."
+    )
+)
+@_focus_safe
+def open_url(url: str) -> list[TextContent | ImageContent]:
+    ok, report, image = flows.open_url(SESSION, url)
+    if not ok:
+        raise MirrorError(report)
+    # Deep links raise a confirmation alert; dismissing it is the caller's
+    # choice, so report it rather than tapping through silently.
+    if flows._alert_showing(SESSION):
+        report += (
+            " iOS is asking whether to open it in another app -- tap 'Open' "
+            "(around device x=0.85 of the width, y=0.51 of the height) to confirm."
+        )
+    return _shot(image, report)
+
+
+@server.tool(
+    description="Report whether the phone is currently portrait or landscape."
+)
+def get_orientation() -> str:
+    frame = SESSION.live_frame()
+    orientation = flows.device_orientation(SESSION)
+    return (
+        f"{orientation} -- mirrored screen is {frame.content_w:g}x"
+        f"{frame.content_h:g} points, coordinate space {frame.device_w}x"
+        f"{frame.device_h}."
+    )
+
+
+@server.tool(
+    description=(
+        "Wait until some text appears on screen, or disappears with gone=true. "
+        "Use this instead of wait_until_settled when you know what you are "
+        "waiting for -- it is more precise and usually faster, and it works on "
+        "screens that never go still (spinners, autoplaying video)."
+    )
+)
+@_focus_safe
+def wait_for_text(text: str, timeout_s: float = 15.0, gone: bool = False) -> str:
+    found, element, _frame = flows.wait_for_text(SESSION, text, timeout_s, gone)
+    if gone:
+        if found:
+            return f"{text!r} is no longer on screen."
+        raise MirrorError(
+            f"{text!r} was still on screen after {timeout_s:g}s"
+            + (f" (at {element.x:.0f}, {element.y:.0f})" if element else "")
+            + "."
+        )
+    if found and element is not None:
+        return (
+            f"{element.text!r} appeared at device ({element.x:.0f}, "
+            f"{element.y:.0f}) -- tap there, or use tap_text()."
+        )
+    raise MirrorError(
+        f"{text!r} did not appear within {timeout_s:g}s. Call describe_screen() "
+        "to see what is actually on screen."
+    )
+
+
+@server.tool(
+    description=(
+        "Back out to the current app's root screen by tapping its back chevron "
+        "until nothing more changes. Use it after open_app when a flow needs a "
+        "known starting point -- iOS resumes an app wherever it was last left, "
+        "which is the usual reason a sequence of taps goes somewhere unexpected. "
+        "(Force-quitting an app is not possible through mirroring.)"
+    )
+)
+@_focus_safe
+def go_to_root(max_steps: int = 5) -> list[TextContent | ImageContent]:
+    steps, frame = flows.go_to_root(SESSION, max_steps)
+    note = (
+        f"Backed out {steps} screen(s) to the app root."
+        if steps
+        else "Already at the app root -- nothing to back out of."
+    )
+    return _shot(frame.image, note, frame)
 
 
 def main() -> None:

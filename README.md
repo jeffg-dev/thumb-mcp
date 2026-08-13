@@ -29,6 +29,14 @@ refuses to connect, that is an Apple-side restriction, not this server.
 
 ## Install
 
+Once published, no clone is needed:
+
+```bash
+uvx thumb-mcp        # runs the server; uv fetches it on first use
+```
+
+Or from source, to hack on it:
+
 ```bash
 git clone https://github.com/ishan-crd/thumb-mcp && cd thumb-mcp
 uv sync
@@ -79,6 +87,12 @@ pane name rather than misbehaving quietly.
 **Claude Code**
 
 ```bash
+claude mcp add thumb -- uvx thumb-mcp
+```
+
+From a source checkout instead:
+
+```bash
 claude mcp add thumb -- uv --directory /absolute/path/to/thumb-mcp run thumb-mcp
 ```
 
@@ -88,18 +102,14 @@ claude mcp add thumb -- uv --directory /absolute/path/to/thumb-mcp run thumb-mcp
 {
   "mcpServers": {
     "thumb": {
-      "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/thumb-mcp",
-        "run", "thumb-mcp"
-      ]
+      "command": "uvx",
+      "args": ["thumb-mcp"]
     }
   }
 }
 ```
 
-Use an absolute path, and `which uv` if `uv` isn't found (GUI apps don't inherit
-your shell `PATH`).
+Use the absolute path form (`"command": "uv"`, `"args": ["--directory", "/path/to/thumb-mcp", "run", "thumb-mcp"]`) if you are running from a checkout. Either way, `which uvx` if the binary isn't found — GUI apps don't inherit your shell `PATH`.
 
 ---
 
@@ -114,6 +124,12 @@ round trip.
 
 | Tool | What it does |
 |---|---|
+| `open_url(url)` | Open any URL or deep link (`exp://`, `maps://`) on the phone, verified |
+| `get_orientation()` | Portrait or landscape |
+| `open_expo_app(url=None, use_dev_build=False)` | **Open your Expo dev-server project on the phone.** Safari → dev URL → Expo Go → confirm handoff → wait for the bundle. Auto-detects the Mac's LAN address |
+| `describe_screen(include_image=False)` | **Every text element on screen with tap coordinates.** Text-only by default — far cheaper than an image |
+| `tap_text("Wallet")` | **Tap on-screen text by name.** No coordinates, survives layout changes |
+| `confirm_send()` | **Send the draft already on screen.** Taps Send directly — no rebuild, no second screenshot first — then verifies. Rebuilds and sends automatically if the tap misses |
 | `send_whatsapp(recipient, text, contact_index=1, send=False)` | **Send a WhatsApp message.** Opens WhatsApp → New chat → search → open chat → type. Drafts by default |
 | `send_message(recipient, text, send=False)` | **Send a text.** Opens Messages → New Message → resolves the recipient to a real contact → types the body. Stops there by default and returns a screenshot to confirm; only sends with `send=true` |
 | `search_in_app(app, query)` | **Open an app and search inside it in one call** — Home → Spotlight → launch → Search tab → search field → type. No intermediate screenshots |
@@ -121,8 +137,9 @@ round trip.
 | `tap_and_type(x, y, text)` | Focus a field and type, waiting for focus first |
 | `survey_home(max_pages=4)` | Pages across the Home Screen, returning **one screenshot per page in a single call**. Stops early at the last page |
 | `scroll(direction, amount=0.6)` | Scroll `down`/`up`/`left`/`right` by a fraction of the screen |
-| `go_back()` | Left-edge back swipe |
-| `control_center()` / `notifications()` | Pull down from the top-right / top-left |
+| `scroll_to("General", tap=False)` | **Scroll until text appears**, then optionally tap it |
+| `go_back()` | Tap the app's top-left back chevron; fails loudly at a root screen |
+| `go_to_root(max_steps=5)` | **Back out to the app's root screen** — a known starting point after `open_app` |
 
 `open_app` uses Spotlight rather than hunting for an icon: it's one deterministic
 path no matter which page the app lives on, needs no pixel search, and Return
@@ -135,16 +152,103 @@ the layout — it replaces a swipe-and-screenshot loop with a single call.
 |---|---|
 | `screenshot()` | The mirrored screen, plus the coordinate space to use |
 | `tap(x, y)` | Tap at a device point |
-| `swipe(x1, y1, x2, y2, duration_ms=300)` | Drag between two device points |
+| `swipe(x1, y1, x2, y2, duration_ms=300)` | Flick/scroll between two device points |
+| `long_press(x, y, hold_ms=700)` | Press and hold — context menus, previews, icon pickup |
+| `double_tap(x, y)` | Two taps in quick succession |
+| `drag(x1, y1, x2, y2)` | Pick up, move, drop — reordering and drag-and-drop |
 | `type_text(text)` | Type into the focused field (unicode + emoji) |
 | `press_key(key)` | `return`, `delete`, `escape`, `tab`, `space`, arrows |
 | `home()` / `app_switcher()` / `spotlight()` | Driven via the app's real menu items |
 | `wait_until_settled(timeout_s=5)` | Poll until the screen stops animating |
+| `wait_for_text("Done", gone=False)` | **Wait for text to appear or disappear** — precise, and works on screens that never go still |
 | `device_info()` | Geometry, permissions, streaming state — for debugging |
 | `reconnect()` | Press Connect/Resume to resume a paused session |
 
+`swipe` and `drag` are deliberately different gestures: a swipe must stay
+*under* iOS's ~500ms long-press threshold or it becomes a drag (which is how a
+Home Screen swipe once rearranged apps into a folder), while a drag must exceed
+it so the item lifts before moving.
+
 Composite flows already settle internally, so `wait_until_settled()` is only
 needed after a raw `tap`/`swipe`.
+
+### Running your Expo project on the phone
+
+```
+open_expo_app()          # exp://<mac-lan-ip>:8081, straight into Expo Go
+open_expo_app(use_dev_build=True)   # http:// page, picks "Development Build"
+```
+
+**The phone cannot reach your Mac's `localhost`** — on the device that means the
+phone itself, so `http://localhost:8081` silently fails. The flow detects the
+Mac's LAN address instead, and refuses a localhost URL with the right one rather
+than failing mysteriously.
+
+It defaults to the `exp://` deep link, which hands straight off to Expo Go and
+skips the dev-server page and its button entirely. `use_dev_build=True` switches
+to `http://` so that page's "Development Build" option can be chosen.
+
+### Waiting
+
+`wait_until_settled()` waits for the screen to stop moving, which is a *proxy*
+for "ready" and fails on anything animated — an autoplaying feed never settles,
+and a spinner keeps a screen busy indefinitely.
+
+When you know what you are waiting for, say so:
+
+```
+wait_for_text("Done")                  # until it appears
+wait_for_text("Loading", gone=True)    # until it goes away
+```
+
+Faster too: found in 0.4s on a screen that was already showing it.
+
+### Reading the screen
+
+```
+describe_screen()      -> "(302, 175) Wallet →", "(112, 278) Available $0", ...
+tap_text("Wi-Fi")      -> taps it, no coordinates involved
+```
+
+Uses Apple's Vision framework locally — no API key, no network, nothing leaves
+the machine. `describe_screen()` returns text only unless you ask for the image,
+which makes it much cheaper than a screenshot for "what's on screen right now".
+
+This is the antidote to the brittleness elsewhere in this codebase: hard-coded
+tile positions, colour-sniffing for buttons, brightness thresholds to guess
+whether a dialog is up. When you can read the screen, you tap the word.
+
+Two things to know:
+
+* It reports where the **text** is. For Home Screen icons that is the *label*,
+  and tapping a label does not launch the app — use `open_app()` for that.
+* Only what is currently visible is recognised. A row below the fold is not
+  there until you scroll to it.
+
+Recognition defaults to Vision's accurate mode: fast mode misread "Ishan" as
+"Ish8n", which matters when the text is used to aim a tap, and accurate only
+costs ~125ms. Set `THUMB_OCR_FAST=1` to trade back.
+
+### Draft, confirm, send
+
+Sending is two calls, not one:
+
+```
+send_message("Himanshu", "hey")   # or send_whatsapp(...)
+   -> drafts, returns a screenshot, sends nothing
+   -> show it to the user and ask
+confirm_send()                    # only after they agree
+```
+
+`confirm_send()` is the fast path: it presses Send on the draft that is already
+on screen rather than rebuilding it, which is **~2s instead of ~20s**. It does
+not screenshot before pressing — the draft was already shown and approved — and
+screenshots after, as proof. If the tap does not register it rebuilds the draft
+and sends it in the same call, without asking twice.
+
+Verifying the send needs no OCR: both apps swap the send control for a grey
+mic/audio glyph once the message goes, so a saturated blue/green pixel at the
+send position means the draft is still pending.
 
 ### One command per app, not one generic "messenger"
 
@@ -194,6 +298,48 @@ and goes to a real person — so it is built to refuse rather than guess:
 
 Note it selects the *first* matching contact. If several people share a name,
 the confirmation screenshot is how you check which one it picked.
+
+### Drafts
+
+`thumb/drafts.py` holds flows that are built but **not registered as tools**, so
+the assistant cannot call them. Keeping them out of the tool list is deliberate:
+a shortcut that reports success while doing nothing is worse than no shortcut.
+
+Currently there: **Blinkit** (grocery). Launching, reaching search, locating ADD
+buttons by colour, detecting the pack-size chooser, and stopping at the cart all
+work. It is a draft because taps can land while results are still rendering —
+which opens a product page instead of adding — and because nothing verifies the
+cart count actually went up. The module documents exactly what to fix.
+
+Promote a draft by finishing those checks and adding a `@server.tool` wrapper.
+
+### Tests
+
+```bash
+uv run pytest
+```
+
+74 tests, no phone, no mirroring session, no permissions — they cover the pure
+logic where the real bugs lived, and run in about a second. CI runs them on
+macOS for Python 3.11 and 3.13 on every push.
+
+What they pin, and why each one exists:
+
+* **Coordinate mapping.** Every tap flows through `Frame.to_global()`; if it
+  drifts, taps land off-target and it looks like the app ignored them.
+* **Settle / assert / wait.** Three tools shipped reporting success while doing
+  nothing, so `assert_changed` failing loudly is now a test, not a hope.
+* **Keycodes.** A regression test that letters do not all map to keycode 0 —
+  they did, which is how "instagram" arrived on the phone as "aaaaaaaaa".
+* **Text ranking.** `tap_text("Wallet")` must prefer the exact label over a
+  longer string containing it.
+* **App aliases.** "insta" resolves to Instagram, unknown apps fall back
+  instead of failing.
+* **Errors.** Each names the exact System Settings pane and the *host* app, not
+  Python.
+
+Anything needing a real device stays out of the suite deliberately: it would
+make CI impossible and the failures would be about the phone, not the code.
 
 ### Adding a shortcut
 
@@ -282,6 +428,62 @@ accents) fall back to the unicode path.
 event otherwise inherits the live modifier state, so a Command flag left over
 from an earlier shortcut rides along on ordinary letters. Typing "instagra**m**"
 then delivers Cmd-M and minimises the mirroring window mid-run.
+
+**Launch apps by tapping the Top Hit, not by pressing Return.** Return in
+Spotlight frequently does *not* launch the highlighted app — Spotlight simply
+sits there with the query typed — and the caller then drives a screen it never
+left. Tapping the Top Hit icon is unambiguous.
+
+**Never use Escape to unwind inside an app.** Within an iOS app Escape acts as
+"go back", and a couple of presses drop clean out to the Home Screen. An earlier
+version of the WhatsApp flow opened the app via Spotlight, pressed Escape twice,
+landed on the Home Screen, and then tried to navigate back in. Flows now tap the
+target control and, if it no-ops, back out once with the app's own back chevron
+and retry — self-correcting, and it never leaves the app.
+
+**Confirm by reading the screen, not by how it looks.** Three separate attempts
+to detect iOS's app-handoff alert by appearance all produced false positives:
+screen dimming fired on any dark page, blue-pixel detection fired on a Google
+results page, and matching the URL text anywhere fired while still inside
+Safari's suggestion dropdown — which *displays* what you just typed. It now
+reads the alert's buttons with OCR, and confirms a loaded page by finding the
+host in the address-bar row specifically.
+
+A related trap: Vision often returns the alert's two buttons as one block,
+`"Cancel Open"`. Requiring them as separate labels missed an alert that was
+plainly on screen.
+
+**Apps resume where you left them, and cannot be force-quit.** iOS reopens an
+app exactly as it was — Messages on a half-filled compose sheet, Blinkit deep in
+checkout, Settings on a sub-page — which is the most common reason a sequence of
+taps ends up somewhere unexpected. Force-quitting would be the thorough fix and
+is not available: the App Switcher's swipe-up card dismissal does not register
+through mirroring (measured delta 0.07), the same way vertical drags do not
+scroll. `go_to_root()` backs out with the back chevron instead, which is what is
+actually reachable.
+
+**Some iOS gestures cannot be driven at all.** Control Centre and Notification
+Centre need a swipe that begins *off* the screen edge, which is unreachable
+through mirroring, and the app's View menu offers only Home Screen, App Switcher
+and Spotlight. Tools for them were removed rather than left in place doing
+nothing. Edge-swipe-to-go-back is unreachable for the same reason, so `go_back()`
+taps the app's own back chevron instead.
+
+**Silent no-ops are the failure mode to design against.** Three tools shipped
+looking fine while doing nothing: vertical `scroll`, Spotlight's Return, and the
+handoff-dialog check. `flows.assert_changed()` now fails loudly where a no-op is
+always a bug, and `scroll()` reports when it did not move rather than claiming
+success. When auditing, gate on a known-good action first — a wedged session
+otherwise makes every tool look broken.
+
+**Vertical scrolling needs wheel events and a warped cursor.** A click-drag
+does not scroll iOS lists through mirroring at all — horizontal drags page the
+Home Screen fine, which is what made this so easy to miss, but a vertical drag
+over a list does precisely nothing. Mirroring expects trackpad-style scroll
+events. The second half of the trap: scroll events go to whatever is under the
+*system* cursor, and posting a synthetic mouse-moved event does not move it —
+the cursor has to be warped with `CGWarpMouseCursorPosition`. Without both
+halves, `scroll()` silently no-ops.
 
 **Menu commands need verifying.** `View > Spotlight` pressed straight after
 `Home` frequently no-ops while the Home Screen is still animating. Unverified,

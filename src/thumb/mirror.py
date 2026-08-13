@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 
 import Quartz
@@ -159,6 +160,25 @@ def find_window() -> WindowInfo:
         width=float(bounds["Width"]),
         height=float(bounds["Height"]),
     )
+
+
+def launch_app(timeout_s: float = 12.0) -> bool:
+    """Launch iPhone Mirroring and wait for it to come up.
+
+    The app exits on its own after a session ends, so a long-running server
+    otherwise dies with "not running" and needs a human to reopen it.
+    """
+    try:
+        subprocess.run(["open", "-a", "iPhone Mirroring"], capture_output=True,
+                       timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        if mirroring_pid() is not None:
+            return True
+    return False
 
 
 def mirroring_pid() -> int | None:

@@ -209,6 +209,169 @@ def _char_key(char: str) -> tuple[int, bool] | None:
     return None
 
 
+def scroll_wheel(
+    frame: Frame,
+    x: float,
+    y: float,
+    lines: int,
+    steps: int = 14,
+    step_delay: float = 0.03,
+) -> tuple[float, float]:
+    """Scroll the content under a device point using wheel events.
+
+    A click-drag does NOT scroll iOS through mirroring -- horizontal drags page
+    the Home Screen fine, but a vertical drag over a list does nothing at all.
+    Mirroring expects trackpad-style scroll events instead.
+
+    The catch is that scroll events are delivered to whatever is under the
+    *system* cursor, and posting a synthetic mouse-moved event does not move it.
+    The cursor has to be warped there for real, which is why this had silently
+    never worked.
+
+    ``lines`` is positive to scroll up (towards earlier content) and negative to
+    scroll down.
+    """
+    ensure_accessibility()
+    pid = frame.window.pid
+    gx, gy = frame.to_global(x, y)
+    origin = _cursor_position()
+    _prepare(pid)
+
+    Quartz.CGWarpMouseCursorPosition(Quartz.CGPoint(gx, gy))
+    Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+    time.sleep(0.12)
+
+    per_step = int(lines / max(1, steps)) or (1 if lines > 0 else -1)
+    for _ in range(steps):
+        event = Quartz.CGEventCreateScrollWheelEvent(
+            None, Quartz.kCGScrollEventUnitPixel, 1, per_step
+        )
+        if event is None:
+            raise MirrorError("Quartz failed to create a scroll event.")
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+        time.sleep(step_delay)
+
+    time.sleep(0.05)
+    Quartz.CGWarpMouseCursorPosition(origin)
+    return gx, gy
+
+
+def long_press(frame: Frame, x: float, y: float, hold_ms: int = 700) -> tuple[float, float]:
+    """Press and hold at a device point -- context menus, icon pickup, previews.
+
+    iOS's long-press threshold is around 500ms, so the default clears it with
+    margin. The pointer is held still: any drift and iOS reclassifies the
+    gesture as a drag.
+    """
+    ensure_accessibility()
+    pid = frame.window.pid
+    gx, gy = frame.to_global(x, y)
+    origin = _cursor_position()
+    _prepare(pid)
+    _mouse(pid, Quartz.kCGEventMouseMoved, gx, gy)
+    time.sleep(0.02)
+    _mouse(pid, Quartz.kCGEventLeftMouseDown, gx, gy)
+    # Keep the press alive with stationary drags; a bare sleep can let the
+    # gesture lapse before iOS registers the hold.
+    deadline = time.perf_counter() + max(hold_ms, 1) / 1000.0
+    while time.perf_counter() < deadline:
+        _mouse(pid, Quartz.kCGEventLeftMouseDragged, gx, gy)
+        time.sleep(0.05)
+    _mouse(pid, Quartz.kCGEventLeftMouseUp, gx, gy)
+    time.sleep(0.02)
+    _restore_cursor(origin)
+    return gx, gy
+
+
+def double_tap(frame: Frame, x: float, y: float, gap_ms: int = 90) -> tuple[float, float]:
+    """Two taps in quick succession, e.g. zoom or like.
+
+    The second click carries clickState 2 -- without it the pair arrives as two
+    unrelated single taps and the app never sees a double tap.
+    """
+    ensure_accessibility()
+    pid = frame.window.pid
+    gx, gy = frame.to_global(x, y)
+    origin = _cursor_position()
+    _prepare(pid)
+    _mouse(pid, Quartz.kCGEventMouseMoved, gx, gy)
+    time.sleep(0.02)
+    for click_state in (1, 2):
+        for event_type in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
+            event = Quartz.CGEventCreateMouseEvent(
+                None, event_type, Quartz.CGPoint(gx, gy), Quartz.kCGMouseButtonLeft
+            )
+            Quartz.CGEventSetIntegerValueField(
+                event, Quartz.kCGMouseEventClickState, click_state
+            )
+            Quartz.CGEventSetFlags(event, 0)
+            _post(pid, event)
+            time.sleep(0.03)
+        if click_state == 1:
+            time.sleep(max(gap_ms, 1) / 1000.0)
+    time.sleep(0.02)
+    _restore_cursor(origin)
+    return gx, gy
+
+
+def drag(
+    frame: Frame,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    hold_ms: int = 700,
+    move_ms: int = 900,
+    settle_ms: int = 700,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Pick something up, move it, put it down -- reordering, drag-and-drop.
+
+    Distinct from swipe(): a swipe is a flick that must stay *under* the
+    long-press threshold, whereas a drag must deliberately exceed it to make
+    iOS lift the item first, then dwell at the destination so the drop target
+    registers before release.
+    """
+    ensure_accessibility()
+    pid = frame.window.pid
+    start = frame.to_global(x1, y1)
+    end = frame.to_global(x2, y2)
+    origin = _cursor_position()
+    _prepare(pid)
+    _mouse(pid, Quartz.kCGEventMouseMoved, *start)
+    time.sleep(0.05)
+    _mouse(pid, Quartz.kCGEventLeftMouseDown, *start)
+
+    deadline = time.perf_counter() + max(hold_ms, 1) / 1000.0
+    while time.perf_counter() < deadline:  # hold still until the item lifts
+        _mouse(pid, Quartz.kCGEventLeftMouseDragged, *start)
+        time.sleep(0.05)
+
+    move_s = max(move_ms, 1) / 1000.0
+    began = time.perf_counter()
+    while True:
+        progress = min(1.0, (time.perf_counter() - began) / move_s)
+        eased = 0.5 - 0.5 * math.cos(progress * math.pi)
+        _mouse(
+            pid,
+            Quartz.kCGEventLeftMouseDragged,
+            start[0] + (end[0] - start[0]) * eased,
+            start[1] + (end[1] - start[1]) * eased,
+        )
+        if progress >= 1.0:
+            break
+        time.sleep(0.02)
+
+    deadline = time.perf_counter() + max(settle_ms, 0) / 1000.0
+    while time.perf_counter() < deadline:  # dwell so the drop target activates
+        _mouse(pid, Quartz.kCGEventLeftMouseDragged, *end)
+        time.sleep(0.05)
+
+    _mouse(pid, Quartz.kCGEventLeftMouseUp, *end)
+    time.sleep(0.02)
+    _restore_cursor(origin)
+    return start, end
+
+
 def type_text(pid: int, text: str) -> int:
     """Type text into the focused field on the device.
 
