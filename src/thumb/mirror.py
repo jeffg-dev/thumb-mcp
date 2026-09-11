@@ -88,6 +88,10 @@ class Frame:
     device_h: int
     device_name: str
 
+    def coordinate_image(self) -> PILImage.Image:
+        """One returned image pixel is one input device point, with no padding."""
+        return self.image.resize((self.device_w, self.device_h), PILImage.Resampling.LANCZOS)
+
     def to_global(self, x: float, y: float) -> tuple[float, float]:
         """Device point -> global screen point (top-left origin, as CGEvent uses)."""
         gx = self.window.x + self.content_x + x * (self.content_w / self.device_w)

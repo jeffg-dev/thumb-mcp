@@ -26,3 +26,16 @@ def changed_fraction(before, after) -> float:
     # with a meaningful luminance difference, not just a whole-frame average.
     mask = cv2.threshold(delta, 12, 255, cv2.THRESH_BINARY)[1]
     return float(np.count_nonzero(mask) / mask.size)
+
+
+def pixels_match(before, after, *, max_fraction: float = .01, max_mean: float = 1.5) -> bool:
+    """Tolerate capture noise, while preserving color-sensitive control changes.
+
+    Inputs are already in the same coordinate space. Do not blur/downsample:
+    a small changed switch or target must remain visible to this comparison.
+    """
+    if before.size != after.size:
+        return False
+    delta = cv2.absdiff(np.asarray(before.convert('RGB')), np.asarray(after.convert('RGB')))
+    changed = np.any(delta > 12, axis=2)
+    return float(changed.mean()) <= max_fraction and float(delta.mean()) <= max_mean

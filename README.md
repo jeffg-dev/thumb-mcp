@@ -56,14 +56,20 @@ settled pixels do not prove an app operation succeeded. Read the returned
 observation to confirm the intended result.
 
 References identify OCR text regions, not guaranteed buttons. They are valid
-only for their screen ID. Changed app pixels, a new action, or a server restart
-invalidate them. A stale-reference error includes a fresh snapshot and sends no
+only for their issuing screen ID. Up to eight issued observations are retained,
+so a later read cannot silently renumber an older screen's refs. Small unrelated
+rendering changes are tolerated. Navigation, scrolling, changed pixels around
+the target, a new action, or a server restart invalidate old targets. A stale-reference error includes a fresh snapshot and sends no
 input. The top 6% status bar is excluded from references and cache invalidation
 so clock/battery changes do not trigger OCR. Fresh window geometry is still used
 when the Mac window moves.
 
 Use `screenshot()` for icons, switches, or ambiguous layouts. It returns the
-image plus a screen ID. Coordinate taps use **device points**, not image pixels:
+image, screen ID, and real OCR refs. **One returned image pixel equals one tap
+coordinate**: a 402×874 device returns a 402×874 image with no padding or offset.
+Pass the coordinates read from that image directly; never subtract a calibration
+offset. If the host visually resizes an image, use its reported native dimensions.
+Coordinate taps still validate the observed screen and the target neighborhood:
 
 ```text
 act(action="tap", screen="a1b2c3-s2", point=[374,74])
@@ -79,17 +85,24 @@ act(action="tap", screen="a1b2c3-s2", point=[374,74])
 | `find(text, direction="down", max_scrolls=5, tap=False)` | Find text with bounded local scrolling; optionally tap a unique match |
 | `gesture(kind, screen, start, end=None, duration_ms=300)` | Swipe, drag, long press, or double tap |
 | `open_app(name)` | Launch an app via Spotlight and observe |
-| `screenshot()` | Explicit visual fallback |
+| `screenshot(response="both")` | Image at input resolution, plus valid refs; `response="text"` is a compact fallback |
 | `device_info()` | Permissions, geometry, OCR counters, recent timings |
 | `reconnect()` | Resume a paused mirroring session |
 
 `act` arguments depend on its action:
 
-- `tap`: `screen` plus exactly one of `ref` or `point`.
+- `tap`: `screen` plus exactly one of `ref` or `point`; or `text` to resolve a
+  unique visible label directly without a screen ID. Missing/ambiguous text
+  fails without input and returns actual refs.
 - `type`: `text` to enter into the already focused field.
 - `key`: key name in `text`, such as `return`, `delete`, or `escape`.
 - `home` / `back` / `app_switcher` / `spotlight`: no target or text arguments.
   Use `open_app(name)` to launch or return to a named app.
+
+Some hosts load only a subset of advertised tools. All nine core tools are
+registered, but if `snapshot`/`find` are not loaded, use
+`screenshot(response="text")` and `act(action="tap", text="Follow Up Mode")`.
+Every tool response that includes an image also includes its valid refs.
 
 Observation-producing tools accept `response="text"`, `"image"`, `"both"`, or
 `"none"`. Text is the default; none returns only the action status while still
@@ -172,7 +185,8 @@ The benchmark only observes the phone and logs timings, sizes, and counters,
 not screen text. See [measurements](docs/performance.md) and the
 [implementation plan](docs/optimization-plan.md).
 
-`IPHONE_MIRROR_MAX_EDGE` controls screenshot resolution (default 1024).
+Core screenshots always use the device coordinate dimensions. The old
+`IPHONE_MIRROR_MAX_EDGE` setting does not resize core responses.
 `THUMB_OCR_FAST=1` opts into faster, less accurate OCR. The default retains
 accurate recognition because misread targets are more expensive than OCR time.
 

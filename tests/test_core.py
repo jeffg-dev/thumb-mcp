@@ -54,7 +54,7 @@ def test_stale_ref_never_posts_input(setup, monkeypatch):
     monkeypatch.setattr(core.inputs, 'tap', lambda *a: calls.append(a))
     core.snapshot()
     screen = core.OBS.latest.screen
-    setup.live_frame = lambda: make_frame(with_block(setup.last_frame.image, (100, 200, 110, 210), (255, 255, 255)))
+    setup.live_frame = lambda: make_frame(with_block(setup.last_frame.image, (145, 295, 165, 315), (255, 255, 255)))
     with pytest.raises(MirrorError, match='Stale'):
         core.act('tap', screen=screen, ref='@1')
     assert not calls
@@ -116,3 +116,51 @@ def test_common_navigation_runs_locally_and_returns_observation(setup, monkeypat
     result = core.act(action)
     assert calls == [action]
     assert '@1' in result[0].text
+
+
+@pytest.mark.parametrize('mode', ['image', 'both'])
+def test_screenshot_pixels_equal_tap_coordinates_and_refs_work(setup, monkeypatch, mode):
+    import base64
+    import io
+    from PIL import Image
+    frame = make_frame(device_w=402, device_h=874)
+    setup.last_frame = frame
+    setup.live_frame = lambda: frame
+    monkeypatch.setenv('IPHONE_MIRROR_MAX_EDGE', '1024')
+    result = core.screenshot(response=mode)
+    decoded = Image.open(io.BytesIO(base64.b64decode(result[1].data)))
+    assert decoded.size == (402, 874)
+    assert '@1' in result[0].text
+    assert 'no scaling or offset' in result[0].text
+    calls = []
+    monkeypatch.setattr(core.inputs, 'tap', lambda f,x,y: calls.append(f.to_global(x,y)))
+    screen = core.OBS.latest.screen
+    core.act('tap', screen=screen, point=(200,749))
+    assert calls[-1] == frame.to_global(200,749)
+    core.screenshot()
+    core.act('tap', screen=core.OBS.latest.screen, ref='@1')
+    assert calls[-1] == frame.to_global(100,200)
+
+
+def test_text_tap_without_screen_works_when_only_act_loaded(setup, monkeypatch):
+    calls = []
+    monkeypatch.setattr(core.inputs, 'tap', lambda *args: calls.append(args))
+    core.act('tap', text='Settings')
+    assert calls[0][1:] == (100,200)
+
+
+def test_screenshot_text_mode_is_snapshot_fallback(setup):
+    result = core.screenshot(response='text')
+    assert len(result) == 1 and '@1' in result[0].text
+
+
+def test_first_tap_after_scroll_accepts_unrelated_blink(setup, monkeypatch):
+    monkeypatch.setattr(core.flows, 'scroll', lambda *a, **k: None)
+    core.scroll()
+    screen = core.OBS.latest.screen
+    changed = make_frame(with_block(setup.last_frame.image, (450, 700, 454, 710), (255,255,255)))
+    setup.live_frame = lambda: changed
+    calls = []
+    monkeypatch.setattr(core.inputs, 'tap', lambda *a: calls.append(a))
+    core.act('tap', screen=screen, ref='@1')
+    assert len(calls) == 1

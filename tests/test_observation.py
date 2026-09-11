@@ -26,10 +26,10 @@ def test_clock_changes_do_not_invalidate_app_targets(observations):
     assert observations.read(changed).screen == first.screen
 
 
-def test_small_content_change_rejects_stale_ref_with_new_snapshot(observations):
+def test_target_content_change_rejects_stale_ref_with_new_snapshot(observations):
     frame = make_frame()
     first = observations.read(frame)
-    changed = make_frame(with_block(frame.image, (100, 200, 102, 202), (255, 255, 255)))
+    changed = make_frame(with_block(frame.image, (145, 220, 165, 240), (255, 255, 255)))
     with pytest.raises(MirrorError, match='Stale.*no input sent') as error:
         observations.target(changed, first.screen, '@1')
     assert observations.latest.screen in str(error.value)
@@ -59,3 +59,51 @@ def test_cache_is_bounded_and_filter_preserves_refs(observations):
     assert len(observations.cache) == 4
     assert '@1' in observations.latest.render('settings')
     assert '@1' not in observations.latest.render('missing')
+
+
+def test_tiny_unrelated_render_change_does_not_require_retry(observations):
+    frame = make_frame()
+    first = observations.read(frame)
+    changed = make_frame(with_block(frame.image, (400, 600, 403, 610), (255, 255, 255)))
+    # Even if another observation was requested, the original ID still owns
+    # its original references until input or a material change invalidates it.
+    newer = observations.read(changed)
+    assert newer.screen != first.screen
+    assert observations.target(changed, first.screen, '@1').text == 'Settings'
+
+
+def test_refs_keep_their_labels_when_later_ocr_order_changes(observations, monkeypatch):
+    frame = make_frame()
+    first = observations.read(frame)
+    changed = make_frame(with_block(frame.image, (400, 600, 403, 610), (255, 255, 255)))
+    monkeypatch.setattr(vision, 'recognize', lambda *a: [vision.TextElement('Other', 200, 300, 20, 20, .9)] + list(first.elements))
+    second = observations.read(changed)
+    assert second.elements[0].text == 'Other'
+    assert observations.target(changed, first.screen, '@1').text == 'Settings'
+    assert observations.target(changed, second.screen, '@2').text == 'Settings'
+
+
+def test_scroll_or_navigation_rejects_old_screen(observations):
+    frame = make_frame()
+    first = observations.read(frame)
+    changed = make_frame(with_block(frame.image, (10, 200, 590, 1100), (255, 255, 255)))
+    with pytest.raises(MirrorError, match='Stale'):
+        observations.target(changed, first.screen, '@1')
+
+
+def test_small_switch_change_near_coordinate_is_rejected(observations):
+    frame = make_frame()
+    first = observations.read(frame)
+    # Device (300,400), translated into this test frame's native pixels.
+    changed = make_frame(with_block(frame.image, (450, 600, 475, 620), (255, 255, 255)))
+    with pytest.raises(MirrorError, match='Stale'):
+        observations.validate_point(changed, first.screen, (300, 400))
+
+
+def test_window_motion_uses_new_position_without_invalidating_targets(observations):
+    from dataclasses import replace
+    frame = make_frame()
+    first = observations.read(frame)
+    moved = replace(frame, window=replace(frame.window, x=100, y=200))
+    assert observations.target(moved, first.screen, '@1').text == 'Settings'
+    assert moved.to_global(100,150) != frame.to_global(100,150)
