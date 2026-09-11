@@ -30,7 +30,7 @@ import time
 from PIL import Image as PILImage
 from PIL import ImageStat
 
-from . import ax, inputs, landmarks, mirror, vision
+from . import ax, inputs, landmarks, mirror, vision, visual
 from .errors import MirrorError
 
 # A frame delta above this means the screen genuinely changed, not just noise
@@ -48,12 +48,15 @@ def settle(
     stable_for_s: float = 0.35,
     threshold: float = 1.2,
     poll_s: float = 0.09,
+    before: PILImage.Image | None = None,
 ) -> tuple[str, PILImage.Image]:
     """Poll until the screen stops changing. Returns (summary, final frame)."""
     deadline = time.monotonic() + max(0.1, timeout_s)
     previous = session.frame().image
     stable_since: float | None = None
     polls = 1
+    changed = before is None or visual.changed_fraction(before, previous) > .001
+    avoid_blank = before is not None and not visual.is_blank(before)
 
     while time.monotonic() < deadline:
         time.sleep(poll_s)
@@ -62,6 +65,13 @@ def settle(
         difference = mirror.frame_difference(previous, current)
         previous = current
         now = time.monotonic()
+        if not changed:
+            changed = visual.changed_fraction(before, current) > .001
+            if not changed:
+                continue
+        if avoid_blank and visual.is_blank(current):
+            stable_since = None
+            continue
         if difference <= threshold:
             if stable_since is None:
                 stable_since = now
@@ -69,6 +79,10 @@ def settle(
                 return f"settled after {polls} frames", current
         else:
             stable_since = None
+    if not changed:
+        return f"no visible change after {timeout_s:g}s", previous
+    if avoid_blank and visual.is_blank(previous):
+        return f"blank or loading after {timeout_s:g}s", previous
     return f"still changing after {timeout_s:g}s ({polls} frames)", previous
 
 
@@ -199,7 +213,7 @@ SCROLL_VECTORS = {
 }
 
 
-def scroll(session, direction: str = "down", amount: float = 0.6):
+def scroll(session, direction: str = "down", amount: float = 0.6, *, frame=None):
     """Scroll the content area by roughly a fraction of the screen.
 
     Vertical scrolling goes through wheel events, not a drag: a click-drag
@@ -214,7 +228,7 @@ def scroll(session, direction: str = "down", amount: float = 0.6):
     amount = max(0.05, min(0.85, amount))
 
     if key in ("down", "up"):
-        frame = session.live_frame()
+        frame = frame or session.live_frame()
         # ~1px of wheel travel per device point, negative to move down the list.
         pixels = int(frame.device_h * amount)
         inputs.scroll_wheel(

@@ -128,3 +128,18 @@ def test_scroll_to_counts_attempts_and_obeys_limit(still_session, monkeypatch, l
     element, count, frame = flows.scroll_to_text(still_session, 'Missing', max_scrolls=limit)
     assert element is None
     assert count == len(calls) == expected
+
+
+def test_settle_does_not_mistake_delayed_action_for_stability():
+    before = solid()
+    after = with_block(before, (0, 0, 604, 700), (240, 240, 240))
+    session = FakeSession([before] * 5 + [after] * 10)
+    status, result = flows.settle(session, timeout_s=1, stable_for_s=.01, poll_s=.01, before=before)
+    assert 'settled' in status
+    assert result == after
+    assert session.calls >= 6
+
+
+def test_settle_reports_action_with_no_visible_change(still_session):
+    status, _ = flows.settle(still_session, timeout_s=.1, poll_s=.01, before=solid())
+    assert 'no visible change' in status

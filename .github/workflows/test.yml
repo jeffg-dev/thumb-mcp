@@ -37,7 +37,8 @@ jobs:
               tools = await server.list_tools()
               names = {t.name for t in tools}
               assert "screenshot" in names, names
-              assert "tap_text" in names, names
+              assert "snapshot" in names and "act" in names, names
+              assert len(names) == 9, names
               # Removed because they cannot work through mirroring.
               assert "control_center" not in names
               print(f"ok: {len(tools)} tools registered")
