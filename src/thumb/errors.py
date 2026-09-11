@@ -1,9 +1,7 @@
 """Loud, actionable errors.
 
-Every failure mode a user can actually hit names the exact System Settings pane
-and the exact application that needs the grant. Permissions on macOS are granted
-to the *host* process (the app that spawned this server), not to Python itself,
-so the messages resolve and name that host.
+Permission errors name the System Settings pane and a best-effort executable
+path, accounting for launchers that disclaim responsibility for their children.
 """
 
 from __future__ import annotations
@@ -21,48 +19,33 @@ ACCESSIBILITY_PANE = "System Settings › Privacy & Security › Accessibility"
 
 @lru_cache(maxsize=1)
 def host_app() -> str:
-    """Best-effort name of the process that must hold the TCC grants.
+    """Resolve the permission target's executable, including disclaimer launches.
 
-    TCC attributes permissions to the *responsible* process -- the app that
-    launched this interpreter (Claude Desktop, Terminal, iTerm, Cursor...).
-    Naming it removes the most common source of "I granted it and it still
-    doesn't work" confusion.
+    This is an ancestry heuristic, not a TCC query. A disclaimer helper breaks
+    responsibility inheritance: use its direct child, not the enclosing app.
     """
-    names: list[str] = []
+    child = os.path.realpath(sys.executable)
     pid = os.getppid()
-    for _ in range(4):  # walk a few ancestors; stop at launchd
-        if pid <= 1:
+    seen: set[int] = set()
+    for _ in range(16):
+        if pid <= 1 or pid in seen:
             break
+        seen.add(pid)
         try:
             out = subprocess.run(
-                ["ps", "-o", "comm=", "-p", str(pid)],
-                capture_output=True,
-                text=True,
-                timeout=2,
+                ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=2, check=True,
             ).stdout.strip()
-            ppid_out = subprocess.run(
-                ["ps", "-o", "ppid=", "-p", str(pid)],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+            parent, executable = out.split(maxsplit=1)
+            pid = int(parent)
+        except (OSError, subprocess.SubprocessError, ValueError):
             break
-        if not out:
-            break
-        # /Applications/Foo.app/Contents/MacOS/Foo -> Foo
-        if ".app/" in out:
-            app = out.split(".app/")[0].split("/")[-1]
-            names.append(f"{app}.app")
-            break
-        names.append(out.split("/")[-1])
-        try:
-            pid = int(ppid_out)
-        except ValueError:
-            break
-    if names:
-        return names[-1]
-    return os.path.basename(sys.executable)
+        if os.path.basename(executable) == "disclaimer":
+            return child
+        child = os.path.realpath(executable)
+        if ".app/" in executable:
+            return child
+    return child
 
 
 class MirrorError(RuntimeError):
@@ -112,7 +95,7 @@ class ScreenRecordingDenied(MirrorError):
             f"Fix: grant Screen Recording to {host_app()!r} in:\n"
             f"  {SCREEN_RECORDING_PANE}\n"
             f"Add {host_app()!r} with the '+' button if it is not listed, enable the "
-            "toggle, then fully quit and reopen that app -- macOS only applies a new "
+            "toggle, then fully quit and reopen the launching app -- macOS only applies a new "
             "Screen Recording grant on relaunch."
         )
 
@@ -125,7 +108,7 @@ class AccessibilityDenied(MirrorError):
             f"Fix: grant Accessibility to {host_app()!r} in:\n"
             f"  {ACCESSIBILITY_PANE}\n"
             f"Add {host_app()!r} with the '+' button if it is not listed, enable the "
-            "toggle, then restart that app."
+            "toggle, then restart the launching app."
         )
 
 

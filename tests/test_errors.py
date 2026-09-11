@@ -53,3 +53,23 @@ def test_every_error_is_a_mirror_error():
                 errors.ScreenRecordingDenied, errors.AccessibilityDenied,
                 errors.MirroringNotConnected):
         assert issubclass(cls, errors.MirrorError)
+
+
+@pytest.mark.parametrize('ancestors,expected', [
+    (['20 /opt/homebrew/bin/uv', '30 /Applications/Claude.app/Contents/Helpers/disclaimer'], '/opt/homebrew/Cellar/uv/test/bin/uv'),
+    (['20 /opt/homebrew/bin/uv', '1 /Applications/Terminal.app/Contents/MacOS/Terminal'], '/Applications/Terminal.app/Contents/MacOS/Terminal'),
+    (['20 /Applications/Claude.app/Contents/Helpers/disclaimer'], '/python'),
+])
+def test_permission_target_respects_disclaimer_boundary(monkeypatch, ancestors, expected):
+    from types import SimpleNamespace
+    responses = iter(ancestors)
+    errors.host_app.cache_clear()
+    monkeypatch.setattr(errors.os, 'getppid', lambda: 10)
+    monkeypatch.setattr(errors.sys, 'executable', '/python')
+    monkeypatch.setattr(errors.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=next(responses)))
+    monkeypatch.setattr(errors.os.path, 'realpath', lambda p: '/opt/homebrew/Cellar/uv/test/bin/uv' if p == '/opt/homebrew/bin/uv' else p)
+    try:
+        assert errors.host_app() == expected
+        assert expected in str(errors.ScreenRecordingDenied())
+    finally:
+        errors.host_app.cache_clear()

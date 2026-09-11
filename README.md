@@ -54,27 +54,37 @@ continuing.
 
 ---
 
+## Fork development
+
+Development for `jeffg-dev/thumb-mcp` happens directly on `dev`, the default
+branch. `origin` points to that fork and `upstream` to `ishan-crd/thumb-mcp`.
+Commit and push to `origin/dev`; upstream pull requests are not part of this
+workflow.
+
 ## Permissions — read this part
 
-macOS grants screen and input permissions to the **application that launches the
-server**, not to Python. If you run this from Claude Desktop, *Claude Desktop*
-needs the grants. From a terminal, that terminal app does. From Claude Code in
-iTerm, *iTerm* does.
+macOS attributes screen and input permissions to a responsible process. For
+ordinary terminal launches this is usually the terminal app. Claude Desktop can
+launch MCP servers through a `disclaimer` helper; in that case the permission
+target is the helper's direct child (often `/opt/homebrew/bin/uv`), not Claude.app.
 
-`device_info()` prints the exact host process it detected, so you don't have to
-guess.
+`device_info()` prints a best-effort permission target executable path, resolving
+symlinks (for example, Homebrew's `uv` link into its Cellar). Detection follows
+process ancestry and is not a query of TCC's internal attribution. Use the
+reported executable when adding the permission, then restart the launching app.
+A Homebrew upgrade may change the resolved path and require a fresh grant.
 
 Grant both:
 
 1. **Screen Recording** — required to capture the mirrored screen.
    `System Settings › Privacy & Security › Screen & System Audio Recording`
-   Add the host app with **+** if it isn't listed, enable the toggle, then
+   Add the reported executable with **+** if it isn't listed, enable the toggle, then
    **fully quit and reopen that app**. macOS only applies a new Screen Recording
    grant on relaunch.
 
 2. **Accessibility** — required to send taps, swipes, and keystrokes.
    `System Settings › Privacy & Security › Accessibility`
-   Add the host app, enable the toggle, restart it.
+   Add the reported executable, enable the toggle, restart the launching app.
 
 Without Screen Recording, capture returns blank frames. Without Accessibility,
 input is silently dropped. The server checks both up front and fails with the
@@ -152,7 +162,7 @@ the layout — it replaces a swipe-and-screenshot loop with a single call.
 |---|---|
 | `screenshot()` | The mirrored screen, plus the coordinate space to use |
 | `tap(x, y)` | Tap at a device point |
-| `swipe(x1, y1, x2, y2, duration_ms=300)` | Flick/scroll between two device points |
+| `swipe(x1, y1, x2, y2, duration_ms=300)` | Mouse drag between two device points; use `scroll` for lists |
 | `long_press(x, y, hold_ms=700)` | Press and hold — context menus, previews, icon pickup |
 | `double_tap(x, y)` | Two taps in quick succession |
 | `drag(x1, y1, x2, y2)` | Pick up, move, drop — reordering and drag-and-drop |
@@ -544,7 +554,10 @@ over a list does precisely nothing. Mirroring expects trackpad-style scroll
 events. The second half of the trap: scroll events go to whatever is under the
 *system* cursor, and posting a synthetic mouse-moved event does not move it —
 the cursor has to be warped with `CGWarpMouseCursorPosition`. Without both
-halves, `scroll()` silently no-ops.
+halves, `scroll()` silently no-ops. Wheel events are pixel-based and continuous,
+with explicit began/changed/ended gesture phases and no inertial momentum tail.
+The cursor stays over the phone for the entire gesture and is restored even on
+failure. `scroll_to` uses this same path and reports attempted scrolls accurately.
 
 **Menu commands need verifying.** `View > Spotlight` pressed straight after
 `Home` frequently no-ops while the Home Screen is still animating. Unverified,

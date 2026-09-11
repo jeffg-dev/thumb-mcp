@@ -225,45 +225,59 @@ def scroll_wheel(
     steps: int = 14,
     step_delay: float = 0.03,
 ) -> tuple[float, float]:
-    """Scroll the content under a device point using wheel events.
+    """Send a continuous trackpad scroll at a device point.
 
-    A click-drag does NOT scroll iOS through mirroring -- horizontal drags page
-    the Home Screen fine, but a vertical drag over a list does nothing at all.
-    Mirroring expects trackpad-style scroll events instead.
-
-    The catch is that scroll events are delivered to whatever is under the
-    *system* cursor, and posting a synthetic mouse-moved event does not move it.
-    The cursor has to be warped there for real, which is why this had silently
-    never worked.
-
-    ``lines`` is positive to scroll up (towards earlier content) and negative to
-    scroll down.
+    ``lines`` is retained for compatibility but measures pixels: positive goes
+    up, negative goes down. Gesture phases describe finger contact; momentum is
+    explicitly None because this bounded gesture has no inertial tail.
     """
+    if steps < 1 or step_delay < 0:
+        raise MirrorError("Scroll steps must be positive and delay nonnegative.")
+    gx, gy = frame.to_global(x, y)
+    if lines == 0:
+        return gx, gy
     ensure_accessibility()
     pid = frame.window.pid
-    gx, gy = frame.to_global(x, y)
     origin = _cursor_position()
-    _prepare(pid)
+    point = Quartz.CGPoint(gx, gy)
 
-    Quartz.CGWarpMouseCursorPosition(Quartz.CGPoint(gx, gy))
-    Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-    time.sleep(0.12)
-
-    per_step = int(lines / max(1, steps)) or (1 if lines > 0 else -1)
-    for _ in range(steps):
+    def emit(delta: int, phase: int) -> None:
         event = Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitPixel, 1, per_step
+            None, Quartz.kCGScrollEventUnitPixel, 1, delta
         )
         if event is None:
             raise MirrorError("Quartz failed to create a scroll event.")
-        Quartz.CGEventSetIntegerValueField(
-            event, Quartz.kCGEventSourceUserData, SYNTHETIC_MARKER
-        )
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-        time.sleep(step_delay)
+        Quartz.CGEventSetLocation(event, point)
+        Quartz.CGEventSetFlags(event, 0)
+        for field, value in (
+            (Quartz.kCGScrollWheelEventIsContinuous, 1),
+            (Quartz.kCGScrollWheelEventScrollPhase, phase),
+            (Quartz.kCGScrollWheelEventMomentumPhase, Quartz.kCGMomentumScrollPhaseNone),
+        ):
+            Quartz.CGEventSetIntegerValueField(event, field, value)
+        _post(pid, event)
 
-    time.sleep(0.05)
-    Quartz.CGWarpMouseCursorPosition(origin)
+    try:
+        _prepare(pid)
+        Quartz.CGWarpMouseCursorPosition(point)
+        Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+        time.sleep(0.12)
+        # Cumulative rounding preserves the requested distance, even for a
+        # small scroll that cannot supply one pixel per step.
+        count = min(steps, abs(lines))
+        previous = 0
+        try:
+            for index in range(count):
+                cumulative = round(lines * (index + 1) / count)
+                emit(cumulative - previous, Quartz.kCGScrollPhaseBegan
+                     if index == 0 else Quartz.kCGScrollPhaseChanged)
+                previous = cumulative
+                time.sleep(step_delay)
+        finally:
+            emit(0, Quartz.kCGScrollPhaseEnded)
+        time.sleep(0.05)
+    finally:
+        Quartz.CGWarpMouseCursorPosition(origin)
     return gx, gy
 
 

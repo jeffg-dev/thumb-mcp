@@ -993,15 +993,21 @@ def scroll_to_text(session, text: str, direction: str = "down", max_scrolls: int
     Stops early when the screen stops changing, which means the list has hit its
     end and further scrolling would just burn time.
     """
-    for scrolls in range(max_scrolls + 1):
+    if max_scrolls < 0:
+        raise MirrorError("max_scrolls must be nonnegative.")
+    scrolls = 0
+    while True:
         frame = session.live_frame()
         elements = vision.recognize(frame.image, frame.device_w, frame.device_h)
         matches = vision.find(elements, text)
         if matches:
             return matches[0], scrolls, frame
 
-        before = session.frame().image
+        if scrolls >= max_scrolls:
+            return None, scrolls, frame
+        before = frame.image
         scroll(session, direction, 0.55)
+        scrolls += 1
         settle(session, timeout_s=4.0, stable_for_s=0.3)
         if not _changed_since(session, before, threshold=2.0):
             break  # reached the end of the list

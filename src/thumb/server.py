@@ -220,7 +220,8 @@ def tap(x: float, y: float) -> str:
 @server.tool(
     description=(
         "Swipe/drag on the iPhone screen from one device point to another. Use "
-        "for scrolling, dismissing, and edge gestures. A longer duration_ms "
+        "for horizontal paging and drag gestures. For lists use scroll or "
+        "scroll_to; vertical mouse drags do not scroll through Mirroring. A longer duration_ms "
         "produces a slower drag; a short one flicks with momentum."
     )
 )
@@ -329,7 +330,7 @@ def device_info() -> str:
     lines: list[str] = []
     screen_ok = bool(Quartz.CGPreflightScreenCaptureAccess())
     ax_ok = ax.accessibility_ok()
-    lines.append(f"Host app needing permissions: {host_app()}")
+    lines.append(f"Permission target executable (best-effort): {host_app()}")
     lines.append(f"Screen Recording granted: {screen_ok}")
     lines.append(f"Accessibility granted:   {ax_ok}")
     if not screen_ok:
@@ -754,7 +755,7 @@ def double_tap(x: float, y: float) -> str:
     description=(
         "Drag an item from one device point to another: press and hold until "
         "it lifts, move, dwell at the destination, release. Use for reordering "
-        "and drag-and-drop. For scrolling or flicking use swipe instead -- a "
+        "and drag-and-drop. For lists use scroll; for horizontal flicks use swipe. A "
         "swipe deliberately stays under the long-press threshold, a drag "
         "deliberately exceeds it."
     )

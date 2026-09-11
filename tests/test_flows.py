@@ -107,3 +107,24 @@ def test_scroll_amount_is_clamped_to_a_sane_band():
     # ...and scroll() clamps before using it, so the extremes stay on screen.
     assert 0.05 <= max(0.05, min(0.85, 0.0)) <= 0.85
     assert 0.05 <= max(0.05, min(0.85, 5.0)) <= 0.85
+
+
+@pytest.mark.parametrize('direction,sign', [('down', -1), ('up', 1)])
+def test_vertical_scroll_uses_wheel(still_session, monkeypatch, direction, sign):
+    calls = []
+    monkeypatch.setattr(flows.inputs, 'scroll_wheel', lambda *args: calls.append(args))
+    flows.scroll(still_session, direction, 0.6)
+    assert len(calls) == 1
+    assert calls[0][-1] == sign * int(852 * 0.6)
+
+
+@pytest.mark.parametrize('limit,changed,expected', [(0, True, 0), (3, True, 3), (3, False, 1)])
+def test_scroll_to_counts_attempts_and_obeys_limit(still_session, monkeypatch, limit, changed, expected):
+    calls = []
+    monkeypatch.setattr(flows.vision, 'recognize', lambda *args: [])
+    monkeypatch.setattr(flows.inputs, 'scroll_wheel', lambda *args: calls.append(args))
+    monkeypatch.setattr(flows, 'settle', lambda *args, **kwargs: None)
+    monkeypatch.setattr(flows, '_changed_since', lambda *args, **kwargs: changed)
+    element, count, frame = flows.scroll_to_text(still_session, 'Missing', max_scrolls=limit)
+    assert element is None
+    assert count == len(calls) == expected
