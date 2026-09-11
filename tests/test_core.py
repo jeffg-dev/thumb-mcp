@@ -16,6 +16,7 @@ def setup(monkeypatch):
     session = SimpleNamespace(last_frame=frame, live_frame=lambda: frame)
     monkeypatch.setattr(core, 'SESSION', session)
     monkeypatch.setattr(core, 'OBS', Observations())
+    monkeypatch.setattr(core, 'TAP_HEALTH', core.TapHealth())
     monkeypatch.setattr(core, 'control', lambda *a: nullcontext())
     monkeypatch.setattr(core.vision, 'recognize', lambda *a: [vision.TextElement('Settings', 100, 200, 60, 20, .99)])
     monkeypatch.setattr(core.flows, 'settle', lambda *a, **k: ('settled', session.last_frame.image))
@@ -164,3 +165,55 @@ def test_first_tap_after_scroll_accepts_unrelated_blink(setup, monkeypatch):
     monkeypatch.setattr(core.inputs, 'tap', lambda *a: calls.append(a))
     core.act('tap', screen=screen, ref='@1')
     assert len(calls) == 1
+
+
+def test_repeated_ineffective_taps_return_info_and_stop_posting(setup, monkeypatch):
+    calls = []
+    monkeypatch.setattr(core.inputs, 'tap', lambda *a: calls.append(a))
+    monkeypatch.setattr(core.flows, 'settle', lambda *a, **k: ('no visible change after 3s', setup.last_frame.image))
+    first = core.act('tap', text='Settings', response='none')
+    assert 'do not repeat' in first[0].text
+    second = core.act('tap', text='Settings', response='none')
+    assert 'physical iPhone' in second[0].text
+    assert core.TAP_HEALTH.paused
+    setup.live_frame = lambda: pytest.fail('Paused tap should not capture or send input')
+    async def check():
+        result = await core.server.call_tool('act', {'action': 'tap', 'text': 'Settings'})
+        assert not result.is_error
+        assert 'No input sent' in result.content[0].text
+        assert 'input_recovered=true' in result.content[0].text
+    asyncio.run(check())
+    assert len(calls) == 2
+
+
+def test_successful_keyboard_action_does_not_clear_touch_pause(setup, monkeypatch):
+    core.TAP_HEALTH.no_effect = 2
+    monkeypatch.setattr(core.inputs, 'press_key', lambda *a: None)
+    core.act('key', text='escape')
+    assert core.TAP_HEALTH.paused
+    assert '@1' in core.snapshot()[0].text
+
+
+def test_find_and_gestures_cannot_bypass_touch_pause(setup):
+    core.TAP_HEALTH.no_effect = 2
+    setup.live_frame = lambda: pytest.fail('Should not capture while tap-like input is paused')
+    assert 'No input sent' in core.find('Settings', tap=True)[0].text
+    assert 'No input sent' in core.gesture('double_tap', screen='old', start=(100,200))[0].text
+    assert 'No input sent' in core.gesture('long_press', screen='old', start=(100,200))[0].text
+
+
+def test_reconnect_requires_explicit_recovery_confirmation_to_clear_pause(setup, monkeypatch):
+    core.TAP_HEALTH.no_effect = 2
+    monkeypatch.setattr(core.runtime, 'reconnect', lambda: 'Already streaming -- nothing to reconnect.')
+    assert 'Possible stuck' in core.reconnect()
+    assert core.TAP_HEALTH.paused
+    assert 'Tap pause cleared' in core.reconnect(input_recovered=True)
+    assert not core.TAP_HEALTH.paused
+    assert core.OBS.latest is None
+
+
+def test_failed_reconnect_does_not_clear_touch_pause(setup, monkeypatch):
+    core.TAP_HEALTH.no_effect = 2
+    monkeypatch.setattr(core.runtime, 'reconnect', lambda: 'Pressed Connect but the session has not resumed yet.')
+    core.reconnect(input_recovered=True)
+    assert core.TAP_HEALTH.paused

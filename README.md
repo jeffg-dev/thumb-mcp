@@ -160,6 +160,22 @@ Mirroring's hover tracking, followed by continuous pixel wheel events with
 began/changed/ended phases. Vertical mouse drags do not scroll lists. Momentum is
 explicitly disabled for bounded scrolls.
 
+## Known defect: live video and keyboard work, but taps do nothing
+
+The phone can enter a stuck touch-input state while Mirroring still streams and
+accepts keyboard input. Repeated ineffective taps now return recovery guidance;
+after two, the core pauses further tap-like input instead of retrying indefinitely.
+This is a heuristic: an inert label can also legitimately ignore a tap.
+
+Ask the user to try one manual tap. If that also fails, stop Mirroring, unlock
+and interact with the physical iPhone, lock it and set it down, then resume
+Mirroring. Restarting only the Mac app did not fix the observed incident.
+After the user confirms touch works, call `reconnect(input_recovered=true)` and
+get a new snapshot. Keyboard success alone is not recovery evidence.
+
+See [THUMB-001](docs/defects/THUMB-001-stuck-phone-touch.md) for the incident,
+confirmed recovery, diagnostic evidence, and detector limitations.
+
 ## Performance and development
 
 Capture uses the system `screencapture` command with a 10-second subprocess
