@@ -26,6 +26,9 @@ def test_trackpad_scroll_distance_phases_and_location(wheel, pixels):
     events, warps = wheel
     frame = make_frame()
     point = inputs.scroll_wheel(frame, 100, 200, pixels)
+    assert Quartz.CGEventGetType(events[0]) == Quartz.kCGEventMouseMoved
+    assert tuple(Quartz.CGEventGetLocation(events[0])) == point
+    events = events[1:]
     field = Quartz.CGEventGetIntegerValueField
     assert sum(field(e, Quartz.kCGScrollWheelEventPointDeltaAxis1) for e in events) == pixels
     assert [field(e, Quartz.kCGScrollWheelEventScrollPhase) for e in events] == (

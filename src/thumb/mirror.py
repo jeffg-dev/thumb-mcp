@@ -223,34 +223,13 @@ def window_by_id(window_id: int) -> WindowInfo | None:
     return None
 
 
-def _cgimage_to_pil(img) -> PILImage.Image:
-    width = Quartz.CGImageGetWidth(img)
-    height = Quartz.CGImageGetHeight(img)
-    stride = Quartz.CGImageGetBytesPerRow(img)
-    data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(img))
-    if data is None:
-        raise CaptureFailed("the window image had no backing pixel data")
-    pil = PILImage.frombuffer(
-        "RGBA", (stride // 4, height), bytes(data), "raw", "BGRA", 0, 1
-    )
-    return pil.crop((0, 0, width, height))
-
-
-def _capture_cgimage(window_id: int) -> PILImage.Image | None:
-    img = Quartz.CGWindowListCreateImage(
-        Quartz.CGRectNull,
-        Quartz.kCGWindowListOptionIncludingWindow,
-        window_id,
-        Quartz.kCGWindowImageBoundsIgnoreFraming
-        | Quartz.kCGWindowImageBestResolution,
-    )
-    if img is None:
-        return None
-    return _cgimage_to_pil(img)
-
-
 def _capture_screencapture_cli(window_id: int) -> PILImage.Image | None:
-    """Fallback for hosts where the (deprecated) CGWindowList capture is blocked."""
+    """Capture with a bounded subprocess, avoiding CGWindowListCreateImage.
+
+    The deprecated in-process API can stall in ScreenCaptureKit for tens of
+    seconds per frame even with permission granted. The system CLI captures
+    this same window promptly and can be terminated if capture stops responding.
+    """
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
         path = handle.name
     try:
@@ -360,7 +339,7 @@ def capture_frame(window: WindowInfo | None = None) -> Frame:
     ensure_screen_recording()
     win = window or find_window()
 
-    rgba = _capture_cgimage(win.window_id) or _capture_screencapture_cli(win.window_id)
+    rgba = _capture_screencapture_cli(win.window_id)
     if rgba is None:
         raise CaptureFailed(
             f"window {win.window_id} returned no image (it likely closed or "

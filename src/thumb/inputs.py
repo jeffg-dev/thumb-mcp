@@ -261,6 +261,9 @@ def scroll_wheel(
         _prepare(pid)
         Quartz.CGWarpMouseCursorPosition(point)
         Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+        # Warping changes the system pointer but does not notify Mirroring's
+        # hover tracking. It needs a mouse-moved event before wheel delivery.
+        _mouse(pid, Quartz.kCGEventMouseMoved, gx, gy)
         time.sleep(0.12)
         # Cumulative rounding preserves the requested distance, even for a
         # small scroll that cannot supply one pixel per step.

@@ -553,11 +553,21 @@ Home Screen fine, which is what made this so easy to miss, but a vertical drag
 over a list does precisely nothing. Mirroring expects trackpad-style scroll
 events. The second half of the trap: scroll events go to whatever is under the
 *system* cursor, and posting a synthetic mouse-moved event does not move it —
-the cursor has to be warped with `CGWarpMouseCursorPosition`. Without both
-halves, `scroll()` silently no-ops. Wheel events are pixel-based and continuous,
+the cursor has to be warped with `CGWarpMouseCursorPosition`. After warping, a
+mouse-moved event must also notify Mirroring's hover tracking. Live testing on
+Alexa Device Settings showed that warping alone did nothing; adding the hover
+event made scrolling work. Wheel events are pixel-based and continuous,
 with explicit began/changed/ended gesture phases and no inertial momentum tail.
 The cursor stays over the phone for the entire gesture and is restored even on
-failure. `scroll_to` uses this same path and reports attempted scrolls accurately.
+failure. Input tools temporarily take focus and restore the previous app when
+they finish. Avoid typing or moving the pointer during a gesture: these share
+the desktop's input stream. A live process-targeted scroll test preserved cursor
+and focus but did not move the phone screen. `scroll_to` uses this same path and reports attempted scrolls accurately.
+
+**Capture must not block the gesture loop.** Capture uses the system
+`screencapture` command with a 10-second timeout. The deprecated
+`CGWindowListCreateImage` path stalled for tens of seconds per frame on the test
+Mac; the CLI captured the same window in about 0.1 seconds.
 
 **Menu commands need verifying.** `View > Spotlight` pressed straight after
 `Home` frequently no-ops while the Home Screen is still animating. Unverified,
